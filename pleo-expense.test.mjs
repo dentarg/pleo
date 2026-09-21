@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {basename, join} from "node:path";
 import test from "node:test";
 
 import {
   catalogEntries,
+  discoverReceiptGroups,
   parseArgs,
   parseReceipt,
   parseReceiptFilename,
@@ -45,6 +49,33 @@ test("accepts supporting PDF files", () => {
       receipts: ["receipt.pdf", "statement.pdf"],
       submit: false,
     },
+  );
+});
+
+test("groups a receipt directory by numbered supporting PDFs", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "pleo-expense-test-"));
+  context.after(() => rm(directory, {force: true, recursive: true}));
+  const first = "2026-01-15_Example_Transit_42_EUR_transport_alpha_DE";
+  const second = "2026-01-16_Example_Hotel_120_EUR_lodging_alpha_DE";
+  const filenames = [
+    `${first}.pdf`,
+    `${first}_2.pdf`,
+    `${first}_3.pdf`,
+    `${second}.pdf`,
+  ];
+
+  await Promise.all(
+    filenames.map((filename) => writeFile(join(directory, filename), "fixture")),
+  );
+
+  const groups = await discoverReceiptGroups(directory);
+
+  assert.deepEqual(
+    groups.map((group) => group.map((path) => basename(path))),
+    [
+      [`${first}.pdf`, `${first}_2.pdf`, `${first}_3.pdf`],
+      [`${second}.pdf`],
+    ],
   );
 });
 

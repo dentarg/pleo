@@ -2,8 +2,8 @@
 
 import {createHash} from "node:crypto";
 import {createRequire} from "node:module";
-import {readFile} from "node:fs/promises";
-import {basename} from "node:path";
+import {readdir, readFile, stat} from "node:fs/promises";
+import {basename, join} from "node:path";
 import process from "node:process";
 import {pathToFileURL} from "node:url";
 
@@ -44,6 +44,7 @@ function usage() {
   ./pleo countries [--json]
   ./pleo projects [--json]
   ./pleo expense RECEIPT.pdf [SUPPORTING.pdf ...] [options]
+  ./pleo expense DIRECTORY [options]
 
 Expense options:
   --amount NUMBER       Override the extracted amount
@@ -60,6 +61,9 @@ Expense options:
 
 Receipt filename:
   YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT[_COUNTRY].pdf
+
+Supporting filename:
+  YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT[_COUNTRY]_N.pdf
 
 Example:
   2026-01-15_Example_Transit_42_EUR_category-token_project-token_DE.pdf
@@ -144,6 +148,94 @@ export function parseReceiptFilename(filename) {
     project: match[6],
     ...(match[7] ? {country: match[7].toUpperCase()} : {}),
   };
+}
+
+export async function discoverReceiptGroups(directory) {
+  const entries = await readdir(directory, {withFileTypes: true});
+  const filenames = entries
+    .filter((entry) => (
+      (entry.isFile() || entry.isSymbolicLink())
+      && entry.name.toLocaleLowerCase("en").endsWith(".pdf")
+    ))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right, "en", {numeric: true}));
+  const primaryNames = [];
+  const supportingByPrimary = new Map();
+  const invalid = [];
+
+  for (const filename of filenames) {
+    const supportingMatch = filename.match(/^(.*)_(\d+)\.pdf$/i);
+    const primaryFilename = supportingMatch
+      ? `${supportingMatch[1]}.pdf`
+      : null;
+
+    if (
+      supportingMatch
+      && Number(supportingMatch[2]) >= 2
+      && parseReceiptFilename(primaryFilename)
+    ) {
+      const supporting = supportingByPrimary.get(primaryFilename) ?? [];
+      supporting.push({filename, number: Number(supportingMatch[2])});
+      supportingByPrimary.set(primaryFilename, supporting);
+    } else if (parseReceiptFilename(filename)) {
+      primaryNames.push(filename);
+    } else {
+      invalid.push(filename);
+    }
+  }
+
+  if (invalid.length > 0) {
+    throw new Error(`Unrecognized receipt filenames: ${invalid.join(", ")}`);
+  }
+
+  for (const primaryFilename of supportingByPrimary.keys()) {
+    if (!primaryNames.includes(primaryFilename)) {
+      throw new Error(`Supporting PDFs have no primary receipt: ${primaryFilename}`);
+    }
+  }
+
+  const groups = primaryNames.map((primaryFilename) => {
+    const supporting = (supportingByPrimary.get(primaryFilename) ?? [])
+      .sort((left, right) => left.number - right.number);
+    const expectedNumbers = supporting.map((_, index) => index + 2);
+    const actualNumbers = supporting.map(({number}) => number);
+
+    if (actualNumbers.some((number, index) => number !== expectedNumbers[index])) {
+      throw new Error(
+        `Supporting PDFs for ${primaryFilename} must be numbered consecutively from 2`,
+      );
+    }
+
+    return [
+      join(directory, primaryFilename),
+      ...supporting.map(({filename}) => join(directory, filename)),
+    ];
+  });
+
+  if (groups.length === 0) {
+    throw new Error(`No primary receipt PDFs found in ${directory}`);
+  }
+
+  return groups;
+}
+
+async function expandReceiptGroups(paths) {
+  if (!paths?.length) {
+    throw new Error("At least one receipt path is required");
+  }
+
+  const pathStats = await Promise.all(paths.map((path) => stat(path)));
+  const directories = pathStats.filter((entry) => entry.isDirectory());
+
+  if (directories.length === 0) {
+    return [paths];
+  }
+
+  if (paths.length !== 1 || directories.length !== 1) {
+    throw new Error("A receipt directory must be the only input path");
+  }
+
+  return discoverReceiptGroups(paths[0]);
 }
 
 export async function extractPdfText(buffer) {
@@ -381,6 +473,7 @@ function countryEntries() {
 
 function formatExpense(summary, {dryRun, expenseId}) {
   const rows = [
+    ["Primary PDF", summary.primaryPdf],
     ["Merchant", summary.merchant],
     ["Amount", `${summary.amount} ${summary.currency}`],
     ["Receipt date", summary.receiptDate],
@@ -403,7 +496,10 @@ function formatExpense(summary, {dryRun, expenseId}) {
   if (dryRun) {
     lines.push("", "Repeat with --submit to create this expense.");
   } else {
-    lines.push("", "Receipt uploaded successfully.");
+    lines.push(
+      "",
+      `${summary.pdfFiles} PDF ${summary.pdfFiles === 1 ? "was" : "were"} uploaded successfully.`,
+    );
   }
 
   return `${lines.join("\n")}\n`;
@@ -666,6 +762,102 @@ function validateBrowser() {
   }
 }
 
+async function prepareExpense(session, parsedOptions) {
+  const filenameOptions = parseReceiptFilename(parsedOptions.receipts[0]) ?? {};
+  const options = {
+    ...filenameOptions,
+    ...parsedOptions,
+  };
+
+  validateOptions(options);
+
+  const receiptBuffers = await Promise.all(
+    options.receipts.map((path) => readFile(path)),
+  );
+  const receiptBuffer = receiptBuffers[0];
+  const receiptText = await extractPdfText(receiptBuffer);
+  const receipt = parseReceipt(receiptText, options);
+  const resolved = await resolveExpenseFields(session, options, receipt);
+  const summary = {
+    accountingDate: resolved.accountingDate,
+    amount: receipt.amount,
+    category: resolved.category.name.trim(),
+    country: resolved.country,
+    currency: receipt.currency,
+    merchant: receipt.merchant,
+    pdfFiles: options.receipts.length,
+    primaryPdf: basename(options.receipts[0]),
+    project: resolved.project.label,
+    receiptDate: receipt.date,
+  };
+
+  return {
+    options,
+    receipt,
+    receiptBuffer,
+    receiptBuffers,
+    resolved,
+    summary,
+  };
+}
+
+async function submitExpense(session, prepared) {
+  const {
+    options,
+    receipt,
+    receiptBuffer,
+    receiptBuffers,
+    resolved,
+    summary,
+  } = prepared;
+
+  const expense = await createExpense(session, {
+    accountId: resolved.category.id,
+    amount: {
+      currency: receipt.currency,
+      value: receipt.amount,
+    },
+    attendees: [],
+    idempotencyKey: deterministicUuid(receiptBuffer),
+    merchantAddress: {
+      country: resolved.country,
+    },
+    merchantName: receipt.merchant,
+    note: options.note ?? null,
+    performed: `${resolved.accountingDate}T12:00:00.000Z`,
+    tagGroups: [{
+      groupId: resolved.projectGroup.id,
+      rowId: resolved.project.value,
+    }],
+  });
+  let uploaded = 0;
+
+  for (let index = 0; index < receiptBuffers.length; index += 1) {
+    try {
+      await uploadReceipt(
+        session,
+        expense.accountingEntryId,
+        receiptBuffers[index],
+        "application/pdf",
+      );
+      uploaded += 1;
+    } catch (error) {
+      throw new Error([
+        `Expense ${expense.accountingEntryId} was created`,
+        `${uploaded}/${receiptBuffers.length} PDFs were uploaded`,
+        `${basename(options.receipts[index])} failed: ${error.message}`,
+      ].join(", "));
+    }
+  }
+
+  return {
+    dryRun: false,
+    expenseId: expense.accountingEntryId,
+    receiptsUploaded: uploaded,
+    summary,
+  };
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const parsedOptions = parseArgs(argv);
 
@@ -681,6 +873,10 @@ export async function main(argv = process.argv.slice(2)) {
       : formatCatalog(entries));
     return;
   }
+
+  const receiptGroups = parsedOptions.command === "expense"
+    ? await expandReceiptGroups(parsedOptions.receipts)
+    : null;
 
   validateBrowser();
   const browser = await puppeteer.connect({
@@ -719,90 +915,51 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
 
-    const filenameOptions = parseReceiptFilename(parsedOptions.receipts?.[0]) ?? {};
-    const options = {
-      ...filenameOptions,
-      ...parsedOptions,
-    };
+    const preparedExpenses = [];
 
-    validateOptions(options);
-
-    const receiptBuffers = await Promise.all(
-      options.receipts.map((path) => readFile(path)),
-    );
-    const receiptBuffer = receiptBuffers[0];
-    const receiptText = await extractPdfText(receiptBuffer);
-    const receipt = parseReceipt(receiptText, options);
-    const resolved = await resolveExpenseFields(session, options, receipt);
-    const summary = {
-      accountingDate: resolved.accountingDate,
-      amount: receipt.amount,
-      category: resolved.category.name.trim(),
-      currency: receipt.currency,
-      merchant: receipt.merchant,
-      country: resolved.country,
-      pdfFiles: options.receipts.length,
-      project: resolved.project.label,
-      receiptDate: receipt.date,
-    };
-
-    if (!options.submit) {
-      process.stdout.write(options.json
-        ? `${JSON.stringify({dryRun: true, ...summary}, null, 2)}\n`
-        : formatExpense(summary, {dryRun: true}));
-      return;
+    for (const receipts of receiptGroups) {
+      preparedExpenses.push(await prepareExpense(session, {
+        ...parsedOptions,
+        receipts,
+      }));
     }
 
-    const expense = await createExpense(session, {
-      accountId: resolved.category.id,
-      amount: {
-        currency: receipt.currency,
-        value: receipt.amount,
-      },
-      attendees: [],
-      idempotencyKey: deterministicUuid(receiptBuffer),
-      merchantAddress: {
-        country: resolved.country,
-      },
-      merchantName: receipt.merchant,
-      note: options.note ?? null,
-      performed: `${resolved.accountingDate}T12:00:00.000Z`,
-      tagGroups: [{
-        groupId: resolved.projectGroup.id,
-        rowId: resolved.project.value,
-      }],
-    });
+    const results = [];
 
-    let uploaded = 0;
+    for (const prepared of preparedExpenses) {
+      const result = parsedOptions.submit
+        ? await submitExpense(session, prepared)
+        : {dryRun: true, summary: prepared.summary};
+      results.push(result);
 
-    for (let index = 0; index < receiptBuffers.length; index += 1) {
-      try {
-        await uploadReceipt(
-          session,
-          expense.accountingEntryId,
-          receiptBuffers[index],
-          "application/pdf",
-        );
-        uploaded += 1;
-      } catch (error) {
-        throw new Error([
-          `Expense ${expense.accountingEntryId} was created`,
-          `${uploaded}/${receiptBuffers.length} PDFs were uploaded`,
-          `${basename(options.receipts[index])} failed: ${error.message}`,
-        ].join(", "));
+      if (!parsedOptions.json) {
+        process.stdout.write(formatExpense(result.summary, {
+          dryRun: result.dryRun,
+          expenseId: result.expenseId,
+        }));
+
+        if (preparedExpenses.length > 1) {
+          process.stdout.write("\n");
+        }
       }
     }
 
-    process.stdout.write(options.json
-      ? `${JSON.stringify({
-        expenseId: expense.accountingEntryId,
-        receiptsUploaded: uploaded,
-        ...summary,
-      }, null, 2)}\n`
-      : formatExpense(summary, {
-        dryRun: false,
-        expenseId: expense.accountingEntryId,
+    if (parsedOptions.json) {
+      const output = results.map((result) => ({
+        dryRun: result.dryRun,
+        ...(result.expenseId ? {expenseId: result.expenseId} : {}),
+        ...(result.receiptsUploaded === undefined
+          ? {}
+          : {receiptsUploaded: result.receiptsUploaded}),
+        ...result.summary,
       }));
+
+      process.stdout.write(`${JSON.stringify(
+        output.length === 1 ? output[0] : output,
+        null,
+        2,
+      )}\n`);
+    }
   } finally {
     await browser.disconnect();
   }

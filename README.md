@@ -53,6 +53,25 @@ The first PDF is the primary receipt and supplies filename metadata. Any
 additional PDFs are uploaded as supporting documents on the same expense.
 Country is optional and defaults to the company's country.
 
+To process a directory, name supporting PDFs after their primary receipt with
+consecutive suffixes starting at `_2`:
+
+```text
+2026-01-15_Example_Transit_42_EUR_category-token_project-token_DE.pdf
+2026-01-15_Example_Transit_42_EUR_category-token_project-token_DE_2.pdf
+2026-01-15_Example_Transit_42_EUR_category-token_project-token_DE_3.pdf
+```
+
+Preview or submit every receipt group in the directory:
+
+```sh
+./pleo expense receipts/
+./pleo expense receipts/ --submit
+```
+
+The directory scan rejects unrecognized PDF names, orphaned supporting files,
+and gaps in the supporting-file sequence before creating any expenses.
+
 Use `--merchant`, `--date`, `--amount`, `--currency`, `--category`, or
 `--project` when a receipt needs an override. `--country` accepts a token from
 `./pleo countries`. `--json` gives machine-readable output for listings and
