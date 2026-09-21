@@ -1,0 +1,14 @@
+{
+  "name": "pleo-expense-cli",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "expense": "./pleo expense",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "i18n-iso-countries": "7.14.0",
+    "pdfjs-dist": "6.3.289",
+    "puppeteer-core": "25.11.0"
+  }
+}
