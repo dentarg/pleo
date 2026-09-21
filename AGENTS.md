@@ -26,6 +26,8 @@ await page.evaluate(({base64, filename, type, selector}) => {
 }, {base64, filename, type: "application/pdf", selector});
 ```
 
+Use `application/pdf` for PDF files and `image/png` for PNG files.
+
 Verify success from the application's upload response and resulting UI state,
 not merely from the filename appearing in the file input.
 
@@ -34,12 +36,12 @@ not merely from the filename appearing in the file input.
 - Use `./pleo categories`, `./pleo countries`, and `./pleo projects` to obtain
   filename tokens.
 - Name receipts as
-  `YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT[_COUNTRY].pdf`.
-- Use `./pleo expense RECEIPT.pdf [SUPPORTING.pdf ...]` for a dry run, then
+  `YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY[_COMMENT].{pdf,png}`.
+- Use `./pleo expense RECEIPT [SUPPORTING ...]` for a dry run, then
   repeat with `--submit` after reviewing its resolved values.
-- For directory processing, name supporting PDFs after the primary receipt
-  with consecutive `_2`, `_3`, and later suffixes. The CLI validates every
-  group before submitting it.
+- For directory processing, name supporting files after the primary receipt
+  metadata, excluding its optional comment, with consecutive `_2`, `_3`, and
+  later suffixes. The CLI validates every group before submitting it.
 - Open temporary host-browser tabs with `browser.newPage({background: true})`
   so automation does not steal window focus.
 - User-provided files are normally under `/app`; confirm with `pwd` and `ls`

@@ -3,7 +3,7 @@
 import {createHash} from "node:crypto";
 import {createRequire} from "node:module";
 import {readdir, readFile, stat} from "node:fs/promises";
-import {basename, join} from "node:path";
+import {basename, extname, join} from "node:path";
 import process from "node:process";
 import {pathToFileURL} from "node:url";
 
@@ -15,6 +15,17 @@ const isoCountries = require("i18n-iso-countries");
 isoCountries.registerLocale(require("i18n-iso-countries/langs/en.json"));
 
 const PLEO_APP_URL = "https://app.pleo.io/expenses";
+const RECEIPT_MIME_TYPES = new Map([
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+]);
+const RECEIPT_FILENAME_PATTERN =
+  /^((20\d{2}-\d{2}-\d{2})_(.+)_([\d]+(?:[.,]\d+)?)_([A-Z]{3})_([^_]+)_([^_]+)_([A-Z]{2}))(?:_(.+))?\.(?:pdf|png)$/i;
+
+export function receiptMimeType(path) {
+  return RECEIPT_MIME_TYPES.get(extname(path).toLocaleLowerCase("en")) ?? null;
+}
+
 const TOKEN_STOP_WORDS = new Set([
   "2024",
   "2025",
@@ -43,13 +54,13 @@ function usage() {
   ./pleo categories [--json]
   ./pleo countries [--json]
   ./pleo projects [--json]
-  ./pleo expense RECEIPT.pdf [SUPPORTING.pdf ...] [options]
+  ./pleo expense RECEIPT [SUPPORTING ...] [options]
   ./pleo expense DIRECTORY [options]
 
 Expense options:
   --amount NUMBER       Override the extracted amount
   --category TOKEN      Override the filename category
-  --country CODE        Merchant country (default: company country)
+  --country CODE        Override the filename country
   --currency CODE       Override the extracted currency
   --date YYYY-MM-DD     Override the extracted receipt date
   --merchant NAME       Override the extracted merchant
@@ -60,10 +71,10 @@ Expense options:
   --help                Show this help
 
 Receipt filename:
-  YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT[_COUNTRY].pdf
+  YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY[_COMMENT].{pdf,png}
 
 Supporting filename:
-  YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT[_COUNTRY]_N.pdf
+  YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY_N.{pdf,png}
 
 Example:
   2026-01-15_Example_Transit_42_EUR_category-token_project-token_DE.pdf
@@ -129,25 +140,32 @@ export function parseArgs(argv) {
   return options;
 }
 
+function matchReceiptFilename(filename) {
+  const name = filename?.split(/[\\/]/).pop();
+  return name?.match(RECEIPT_FILENAME_PATTERN) ?? null;
+}
+
 export function parseReceiptFilename(filename) {
-  const basename = filename.split(/[\\/]/).pop();
-  const match = basename?.match(
-    /^(20\d{2}-\d{2}-\d{2})_(.+)_([\d]+(?:[.,]\d+)?)_([A-Z]{3})_([^_]+)_([^_]+?)(?:_([A-Z]{2}))?\.pdf$/i,
-  );
+  const match = matchReceiptFilename(filename);
 
   if (!match) {
     return null;
   }
 
   return {
-    amount: Number(match[3].replace(",", ".")),
-    category: match[5],
-    currency: match[4].toUpperCase(),
-    date: match[1],
-    merchant: match[2].replaceAll("_", " "),
-    project: match[6],
-    ...(match[7] ? {country: match[7].toUpperCase()} : {}),
+    amount: Number(match[4].replace(",", ".")),
+    category: match[6],
+    country: match[8].toUpperCase(),
+    currency: match[5].toUpperCase(),
+    date: match[2],
+    merchant: match[3].replaceAll("_", " "),
+    ...(match[9] ? {note: match[9].replaceAll("_", " ")} : {}),
+    project: match[7],
   };
+}
+
+function receiptIdentity(filename) {
+  return matchReceiptFilename(filename)?.[1] ?? null;
 }
 
 export async function discoverReceiptGroups(directory) {
@@ -155,30 +173,41 @@ export async function discoverReceiptGroups(directory) {
   const filenames = entries
     .filter((entry) => (
       (entry.isFile() || entry.isSymbolicLink())
-      && entry.name.toLocaleLowerCase("en").endsWith(".pdf")
+      && receiptMimeType(entry.name)
     ))
     .map((entry) => entry.name)
     .sort((left, right) => left.localeCompare(right, "en", {numeric: true}));
-  const primaryNames = [];
-  const supportingByPrimary = new Map();
+  const primaryByStem = new Map();
+  const supportingByStem = new Map();
   const invalid = [];
 
   for (const filename of filenames) {
-    const supportingMatch = filename.match(/^(.*)_(\d+)\.pdf$/i);
-    const primaryFilename = supportingMatch
-      ? `${supportingMatch[1]}.pdf`
+    const extension = extname(filename);
+    const stem = filename.slice(0, -extension.length);
+    const supportingMatch = stem.match(/^(.*)_(\d+)$/);
+    const primaryCandidate = supportingMatch
+      ? `${supportingMatch[1]}${extension}`
       : null;
+    const supportingIdentity = receiptIdentity(primaryCandidate);
 
     if (
       supportingMatch
       && Number(supportingMatch[2]) >= 2
-      && parseReceiptFilename(primaryFilename)
+      && supportingIdentity
     ) {
-      const supporting = supportingByPrimary.get(primaryFilename) ?? [];
+      const supporting = supportingByStem.get(supportingIdentity) ?? [];
       supporting.push({filename, number: Number(supportingMatch[2])});
-      supportingByPrimary.set(primaryFilename, supporting);
+      supportingByStem.set(supportingIdentity, supporting);
     } else if (parseReceiptFilename(filename)) {
-      primaryNames.push(filename);
+      const identity = receiptIdentity(filename);
+
+      if (primaryByStem.has(identity)) {
+        throw new Error(
+          `Multiple primary receipts have the same name: ${identity}`,
+        );
+      }
+
+      primaryByStem.set(identity, filename);
     } else {
       invalid.push(filename);
     }
@@ -188,21 +217,21 @@ export async function discoverReceiptGroups(directory) {
     throw new Error(`Unrecognized receipt filenames: ${invalid.join(", ")}`);
   }
 
-  for (const primaryFilename of supportingByPrimary.keys()) {
-    if (!primaryNames.includes(primaryFilename)) {
-      throw new Error(`Supporting PDFs have no primary receipt: ${primaryFilename}`);
+  for (const primaryStem of supportingByStem.keys()) {
+    if (!primaryByStem.has(primaryStem)) {
+      throw new Error(`Supporting files have no primary receipt: ${primaryStem}`);
     }
   }
 
-  const groups = primaryNames.map((primaryFilename) => {
-    const supporting = (supportingByPrimary.get(primaryFilename) ?? [])
+  const groups = [...primaryByStem].map(([primaryStem, primaryFilename]) => {
+    const supporting = (supportingByStem.get(primaryStem) ?? [])
       .sort((left, right) => left.number - right.number);
     const expectedNumbers = supporting.map((_, index) => index + 2);
     const actualNumbers = supporting.map(({number}) => number);
 
     if (actualNumbers.some((number, index) => number !== expectedNumbers[index])) {
       throw new Error(
-        `Supporting PDFs for ${primaryFilename} must be numbered consecutively from 2`,
+        `Supporting files for ${primaryFilename} must be numbered consecutively from 2`,
       );
     }
 
@@ -213,7 +242,7 @@ export async function discoverReceiptGroups(directory) {
   });
 
   if (groups.length === 0) {
-    throw new Error(`No primary receipt PDFs found in ${directory}`);
+    throw new Error(`No primary receipt files found in ${directory}`);
   }
 
   return groups;
@@ -473,7 +502,7 @@ function countryEntries() {
 
 function formatExpense(summary, {dryRun, expenseId}) {
   const rows = [
-    ["Primary PDF", summary.primaryPdf],
+    ["Primary receipt", summary.primaryReceipt],
     ["Merchant", summary.merchant],
     ["Amount", `${summary.amount} ${summary.currency}`],
     ["Receipt date", summary.receiptDate],
@@ -481,7 +510,7 @@ function formatExpense(summary, {dryRun, expenseId}) {
     ["Category", summary.category],
     ["Project", summary.project],
     ["Country", summary.country],
-    ["PDF files", String(summary.pdfFiles)],
+    ["Receipt files", String(summary.receiptFiles)],
   ];
   const width = Math.max(...rows.map(([label]) => label.length));
   const heading = dryRun
@@ -498,7 +527,7 @@ function formatExpense(summary, {dryRun, expenseId}) {
   } else {
     lines.push(
       "",
-      `${summary.pdfFiles} PDF ${summary.pdfFiles === 1 ? "was" : "were"} uploaded successfully.`,
+      `${summary.receiptFiles} receipt ${summary.receiptFiles === 1 ? "was" : "files were"} uploaded successfully.`,
     );
   }
 
@@ -646,12 +675,8 @@ async function fetchProjectGroup(session) {
 
 async function resolveExpenseFields(session, options, receipt) {
   const headers = {authorization: session.authorization};
-  const [detailsResponse, accounts, projectGroup, allowedResponse] =
+  const [accounts, projectGroup, allowedResponse] =
     await Promise.all([
-      requestJson(
-        `${session.bffOrigin}/expenses.addExpense.getAddOutOfPocketExpenseDetails?batch=1&input=%7B%7D`,
-        headers,
-      ),
       fetchCategories(session),
       fetchProjectGroup(session),
       requestJson(
@@ -659,7 +684,6 @@ async function resolveExpenseFields(session, options, receipt) {
         headers,
       ),
     ]);
-  const details = trpcData(detailsResponse, true);
   const categoryEntry = selectCatalogEntry(
     catalogEntries(accounts, (account) => account.name),
     options.category,
@@ -672,15 +696,16 @@ async function resolveExpenseFields(session, options, receipt) {
   );
   const allowedFrom = trpcData(allowedResponse).slice(0, 10);
   const accountingDate = receipt.date < allowedFrom ? allowedFrom : receipt.date;
-  const country = options.country
-    ? selectCatalogEntry(countryEntries(), options.country, "country").item
-    : details.company.country;
+  const country = selectCatalogEntry(
+    countryEntries(),
+    options.country,
+    "country",
+  ).item;
 
   return {
     accountingDate,
     allowedFrom,
     category: categoryEntry.item,
-    company: details.company,
     country,
     project: projectEntry.item,
     projectGroup,
@@ -747,12 +772,20 @@ function validateOptions(options) {
     );
   }
 
+  if (!options.country) {
+    throw new Error(
+      "A country token is required in the filename or with --country",
+    );
+  }
+
   const invalidFiles = options.receipts.filter(
-    (path) => !path.toLocaleLowerCase("en").endsWith(".pdf"),
+    (path) => !receiptMimeType(path),
   );
 
   if (invalidFiles.length > 0) {
-    throw new Error(`Only PDF files are supported: ${invalidFiles.join(", ")}`);
+    throw new Error(
+      `Only PDF and PNG files are supported: ${invalidFiles.join(", ")}`,
+    );
   }
 }
 
@@ -775,7 +808,11 @@ async function prepareExpense(session, parsedOptions) {
     options.receipts.map((path) => readFile(path)),
   );
   const receiptBuffer = receiptBuffers[0];
-  const receiptText = await extractPdfText(receiptBuffer);
+  const primaryExtension = extname(options.receipts[0])
+    .toLocaleLowerCase("en");
+  const receiptText = primaryExtension === ".pdf"
+    ? await extractPdfText(receiptBuffer)
+    : "";
   const receipt = parseReceipt(receiptText, options);
   const resolved = await resolveExpenseFields(session, options, receipt);
   const summary = {
@@ -785,9 +822,9 @@ async function prepareExpense(session, parsedOptions) {
     country: resolved.country,
     currency: receipt.currency,
     merchant: receipt.merchant,
-    pdfFiles: options.receipts.length,
-    primaryPdf: basename(options.receipts[0]),
+    primaryReceipt: basename(options.receipts[0]),
     project: resolved.project.label,
+    receiptFiles: options.receipts.length,
     receiptDate: receipt.date,
   };
 
@@ -838,13 +875,13 @@ async function submitExpense(session, prepared) {
         session,
         expense.accountingEntryId,
         receiptBuffers[index],
-        "application/pdf",
+        receiptMimeType(options.receipts[index]),
       );
       uploaded += 1;
     } catch (error) {
       throw new Error([
         `Expense ${expense.accountingEntryId} was created`,
-        `${uploaded}/${receiptBuffers.length} PDFs were uploaded`,
+        `${uploaded}/${receiptBuffers.length} receipt files were uploaded`,
         `${basename(options.receipts[index])} failed: ${error.message}`,
       ].join(", "));
     }
