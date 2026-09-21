@@ -26,6 +26,10 @@ export function receiptMimeType(path) {
   return RECEIPT_MIME_TYPES.get(extname(path).toLocaleLowerCase("en")) ?? null;
 }
 
+export function normalizeNote(note) {
+  return note ?? "";
+}
+
 const TOKEN_STOP_WORDS = new Set([
   "2024",
   "2025",
@@ -860,7 +864,7 @@ async function submitExpense(session, prepared) {
       country: resolved.country,
     },
     merchantName: receipt.merchant,
-    note: options.note ?? null,
+    note: normalizeNote(options.note),
     performed: `${resolved.accountingDate}T12:00:00.000Z`,
     tagGroups: [{
       groupId: resolved.projectGroup.id,

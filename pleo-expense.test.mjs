@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   catalogEntries,
   discoverReceiptGroups,
+  normalizeNote,
   parseArgs,
   parseReceipt,
   parseReceiptFilename,
@@ -119,6 +120,11 @@ test("parses an optional filename comment as the expense note", () => {
     ).note,
     "Client dinner",
   );
+});
+
+test("normalizes a missing expense note to an empty string", () => {
+  assert.equal(normalizeNote(undefined), "");
+  assert.equal(normalizeNote("Client dinner"), "Client dinner");
 });
 
 test("parses expense metadata from a PNG filename", () => {
