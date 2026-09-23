@@ -163,6 +163,18 @@ export function parseRecentLimit(value = "10") {
   return limit;
 }
 
+export function normalizeMinorMoney(money) {
+  const fractionDigits = new Intl.NumberFormat("en-US", {
+    currency: money.currency,
+    style: "currency",
+  }).resolvedOptions().maximumFractionDigits;
+
+  return {
+    amount: money.value / (10 ** fractionDigits),
+    currency: money.currency,
+  };
+}
+
 export function normalizeRecentExpense(expense) {
   const money = expense.bill ?? expense.amount ?? {};
   const amount = typeof money === "number" ? money : money.value;
@@ -601,9 +613,24 @@ function formatTable(headings, rows, rightAligned = []) {
   ].join("\n");
 }
 
-function formatRecentExpenses(expenses) {
+function formatApprovedReimbursementBalance(balance) {
+  const label = balance.amount < 0
+    ? "Owed to company"
+    : "Approved, awaiting payout";
+  const amount = formatNumber(Math.abs(balance.amount));
+
+  return `${label}: ${amount} ${balance.currency}`;
+}
+
+function formatRecentExpenses(expenses, approvedReimbursementBalance) {
   if (expenses.length === 0) {
-    return "No recent expenses found.\n";
+    return [
+      "No recent expenses found.",
+      ...(approvedReimbursementBalance
+        ? ["", formatApprovedReimbursementBalance(approvedReimbursementBalance)]
+        : []),
+      "",
+    ].join("\n");
   }
 
   const rows = expenses.map((expense) => [
@@ -631,9 +658,16 @@ function formatRecentExpenses(expenses) {
     total.receiptCount,
     `${formatNumber(total.amount)} ${total.currency}`,
   ]);
+  const balanceLines = approvedReimbursementBalance
+    ? [
+      "",
+      formatApprovedReimbursementBalance(approvedReimbursementBalance),
+    ]
+    : [];
 
   return [
     formatTable(headings, rows, [2]),
+    ...balanceLines,
     "",
     "Totals by review status",
     formatTable(
@@ -832,6 +866,16 @@ async function fetchRecentExpenses(session, limit) {
   return expenses
     .slice(0, limit)
     .map(normalizeRecentExpense);
+}
+
+async function fetchApprovedReimbursementBalance(session) {
+  const response = await requestJson(
+    `${session.bffOrigin}/expenses.employeeBalance.getDetails?input=%7B%7D`,
+    {authorization: session.authorization},
+  );
+  const balance = trpcData(response)?.approvedBalance;
+
+  return balance ? normalizeMinorMoney(balance) : null;
 }
 
 async function fetchCategories(session) {
@@ -1157,13 +1201,17 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     if (parsedOptions.command === "recent") {
-      const expenses = await fetchRecentExpenses(session, recentLimit);
+      const [expenses, approvedReimbursementBalance] = await Promise.all([
+        fetchRecentExpenses(session, recentLimit),
+        fetchApprovedReimbursementBalance(session),
+      ]);
       process.stdout.write(parsedOptions.json
         ? `${JSON.stringify({
+          approvedReimbursementBalance,
           expenses,
           totals: summarizeRecentExpenses(expenses),
         }, null, 2)}\n`
-        : formatRecentExpenses(expenses));
+        : formatRecentExpenses(expenses, approvedReimbursementBalance));
       return;
     }
 

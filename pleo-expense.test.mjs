@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   catalogEntries,
   discoverReceiptGroups,
+  normalizeMinorMoney,
   normalizeRecentExpense,
   normalizeNote,
   parseArgs,
@@ -83,6 +84,13 @@ test("normalizes a recent expense", () => {
       reviewStatus: "REVIEWED_AS_OKAY",
       status: "COMPLETED",
     },
+  );
+});
+
+test("normalizes a reimbursement balance from minor currency units", () => {
+  assert.deepEqual(
+    normalizeMinorMoney({currency: "SEK", value: 229376}),
+    {amount: 2293.76, currency: "SEK"},
   );
 });
 
