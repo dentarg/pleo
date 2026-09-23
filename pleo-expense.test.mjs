@@ -7,12 +7,15 @@ import test from "node:test";
 import {
   catalogEntries,
   discoverReceiptGroups,
+  normalizeRecentExpense,
   normalizeNote,
   parseArgs,
+  parseRecentLimit,
   parseReceipt,
   parseReceiptFilename,
   receiptMimeType,
   selectUnique,
+  summarizeRecentExpenses,
 } from "./pleo-expense.mjs";
 
 test("parses a receipt", () => {
@@ -40,6 +43,113 @@ test("parses CLI options", () => {
       receipts: ["receipt.pdf"],
       submit: true,
     },
+  );
+});
+
+test("parses recent expense options", () => {
+  assert.deepEqual(
+    parseArgs(["recent", "--limit", "5", "--json"]),
+    {
+      command: "recent",
+      json: true,
+      limit: "5",
+      submit: false,
+    },
+  );
+  assert.equal(parseRecentLimit("5"), 5);
+  assert.throws(() => parseRecentLimit("0"), /positive integer/);
+});
+
+test("normalizes a recent expense", () => {
+  assert.deepEqual(
+    normalizeRecentExpense({
+      bill: {currency: "EUR", value: -42.5},
+      expenseId: "expense-1",
+      id: "entry-1",
+      merchantName: "Example Transit",
+      missingReceipts: false,
+      performed: "2026-01-15T12:00:00.000Z",
+      reviewStatus: "REVIEWED_AS_OKAY",
+      status: "COMPLETED",
+    }),
+    {
+      amount: 42.5,
+      currency: "EUR",
+      date: "2026-01-15",
+      expenseId: "expense-1",
+      id: "entry-1",
+      merchant: "Example Transit",
+      receiptStatus: "UPLOADED",
+      reviewStatus: "REVIEWED_AS_OKAY",
+      status: "COMPLETED",
+    },
+  );
+});
+
+test("labels reimbursement payouts without requiring receipts", () => {
+  assert.deepEqual(
+    normalizeRecentExpense({
+      bill: {currency: "SEK", value: -100},
+      expenseViewType: "reimbursement",
+      family: "REIMBURSEMENT",
+      id: "entry-1",
+      missingReceipts: true,
+      performed: "2026-01-15T12:00:00.000Z",
+      reviewStatus: "NOT_REQUIRED",
+      status: "COMPLETED",
+    }),
+    {
+      amount: 100,
+      currency: "SEK",
+      date: "2026-01-15",
+      expenseId: "entry-1",
+      id: "entry-1",
+      merchant: "Reimbursement",
+      receiptStatus: "NOT_APPLICABLE",
+      reviewStatus: "NOT_REQUIRED",
+      status: "COMPLETED",
+    },
+  );
+});
+
+test("summarizes recent expenses by review status and currency", () => {
+  assert.deepEqual(
+    summarizeRecentExpenses([
+      {
+        amount: 10.25,
+        currency: "EUR",
+        receiptStatus: "UPLOADED",
+        reviewStatus: "OK",
+      },
+      {
+        amount: 4.75,
+        currency: "EUR",
+        receiptStatus: "MISSING",
+        reviewStatus: "OK",
+      },
+      {
+        amount: 20,
+        currency: "SEK",
+        receiptStatus: "UPLOADED",
+        reviewStatus: "WAITING_FOR_REVIEWER",
+      },
+    ]),
+    [
+      {
+        amount: 15,
+        currency: "EUR",
+        expenseCount: 2,
+        receiptCount: 1,
+        status: "OK",
+      },
+      {
+        amount: 20,
+        currency: "SEK",
+        expenseCount: 1,
+        receiptCount: 1,
+        status: "WAITING_FOR_REVIEWER",
+      },
+    ],
   );
 });
 

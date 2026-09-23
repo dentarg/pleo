@@ -58,8 +58,13 @@ function usage() {
   ./pleo categories [--json]
   ./pleo countries [--json]
   ./pleo projects [--json]
+  ./pleo recent [--limit NUMBER] [--json]
   ./pleo expense RECEIPT [SUPPORTING ...] [options]
   ./pleo expense DIRECTORY [options]
+
+Recent options:
+  --limit NUMBER        Number of expenses to show (default: 10, maximum: 100)
+  --json                Print machine-readable output
 
 Expense options:
   --amount NUMBER       Override the extracted amount
@@ -91,7 +96,7 @@ export function parseArgs(argv) {
   };
   const args = [...argv];
 
-  if (["categories", "countries", "projects"].includes(args[0])) {
+  if (["categories", "countries", "projects", "recent"].includes(args[0])) {
     options.command = args.shift();
   } else if (args[0] === "expense") {
     options.command = args.shift();
@@ -142,6 +147,70 @@ export function parseArgs(argv) {
   }
 
   return options;
+}
+
+export function parseRecentLimit(value = "10") {
+  const limit = Number(value);
+
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error("Recent limit must be a positive integer");
+  }
+
+  if (limit > 100) {
+    throw new Error("Recent limit cannot exceed 100");
+  }
+
+  return limit;
+}
+
+export function normalizeRecentExpense(expense) {
+  const money = expense.bill ?? expense.amount ?? {};
+  const amount = typeof money === "number" ? money : money.value;
+  const expenseType = expense.expenseViewType ?? expense.family;
+  const isReimbursement = expense.expenseViewType === "reimbursement"
+    || expense.family === "REIMBURSEMENT";
+  const performed = expense.performed
+    ?? expense.performedAt
+    ?? expense.createdAt
+    ?? "";
+
+  return {
+    amount: Number.isFinite(Number(amount)) ? Math.abs(Number(amount)) : null,
+    currency: money.currency ?? expense.currency ?? null,
+    date: String(performed).slice(0, 10),
+    expenseId: expense.expenseId ?? expense.id,
+    id: expense.id ?? expense.expenseId,
+    merchant: expense.merchantName
+      ?? expense.supplierName
+      ?? (expenseType ? humanizeStatus(expenseType) : "Unknown"),
+    receiptStatus: isReimbursement
+      ? "NOT_APPLICABLE"
+      : (expense.missingReceipts ? "MISSING" : "UPLOADED"),
+    reviewStatus: expense.reviewStatus ?? "UNKNOWN",
+    status: expense.status ?? expense.exportStatus ?? "UNKNOWN",
+  };
+}
+
+export function summarizeRecentExpenses(expenses) {
+  const totals = new Map();
+
+  for (const expense of expenses) {
+    const key = `${expense.reviewStatus}\0${expense.currency ?? "UNKNOWN"}`;
+    const total = totals.get(key) ?? {
+      amount: 0,
+      currency: expense.currency ?? "UNKNOWN",
+      expenseCount: 0,
+      receiptCount: 0,
+      status: expense.reviewStatus,
+    };
+
+    total.amount += expense.amount ?? 0;
+    total.expenseCount += 1;
+    total.receiptCount += expense.receiptStatus === "UPLOADED" ? 1 : 0;
+    totals.set(key, total);
+  }
+
+  return [...totals.values()];
 }
 
 function matchReceiptFilename(filename) {
@@ -494,6 +563,88 @@ function formatCatalog(entries) {
   return `${lines.join("\n")}\n`;
 }
 
+function humanizeStatus(status) {
+  return status
+    .toLocaleLowerCase("en")
+    .replaceAll("_", " ")
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function formatNumber(number) {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
+  }).format(number);
+}
+
+function formatTable(headings, rows, rightAligned = []) {
+  const normalizedHeadings = headings.map((heading) => heading.normalize("NFC"));
+  const normalizedRows = rows.map((row) => row.map(
+    (value) => String(value).normalize("NFC"),
+  ));
+  const widths = normalizedHeadings.map((heading, index) => Math.max(
+    heading.length,
+    ...normalizedRows.map((row) => row[index].length),
+  ));
+  const formatRow = (row) => row
+    .map((value, index) => (
+      rightAligned.includes(index)
+        ? value.padStart(widths[index])
+        : value.padEnd(widths[index])
+    ))
+    .join("  ")
+    .trimEnd();
+
+  return [
+    formatRow(normalizedHeadings),
+    formatRow(widths.map((width) => "-".repeat(width))),
+    ...normalizedRows.map(formatRow),
+  ].join("\n");
+}
+
+function formatRecentExpenses(expenses) {
+  if (expenses.length === 0) {
+    return "No recent expenses found.\n";
+  }
+
+  const rows = expenses.map((expense) => [
+    expense.date || "—",
+    expense.merchant,
+    expense.amount === null
+      ? "—"
+      : `${formatNumber(expense.amount)} ${expense.currency ?? ""}`.trim(),
+    humanizeStatus(expense.status),
+    humanizeStatus(expense.reviewStatus),
+    humanizeStatus(expense.receiptStatus),
+  ]);
+  const headings = [
+    "DATE",
+    "MERCHANT",
+    "AMOUNT",
+    "STATUS",
+    "REVIEW",
+    "RECEIPT",
+  ];
+  const totals = summarizeRecentExpenses(expenses);
+  const totalRows = totals.map((total) => [
+    humanizeStatus(total.status),
+    total.expenseCount,
+    total.receiptCount,
+    `${formatNumber(total.amount)} ${total.currency}`,
+  ]);
+
+  return [
+    formatTable(headings, rows, [2]),
+    "",
+    "Totals by review status",
+    formatTable(
+      ["STATUS", "EXPENSES", "RECEIPTS", "AMOUNT"],
+      totalRows,
+      [1, 2, 3],
+    ),
+    "",
+  ].join("\n");
+}
+
 function countryEntries() {
   return Object.entries(isoCountries.getNames("en", {select: "official"}))
     .map(([code, name]) => ({
@@ -635,6 +786,52 @@ async function requestJson(url, {authorization, body, method = "GET"}) {
 function trpcData(response, batched = false) {
   const result = batched ? response?.[0] : response;
   return result?.result?.data;
+}
+
+function recentDateRange() {
+  const now = new Date();
+  const from = new Date(now);
+  from.setUTCFullYear(from.getUTCFullYear() - 5);
+
+  return {
+    from: from.toISOString().slice(0, 10),
+    to: now.toISOString().slice(0, 10),
+  };
+}
+
+async function fetchRecentExpenses(session, limit) {
+  const expenses = [];
+  let cursor;
+
+  while (expenses.length < limit) {
+    const input = {
+      filters: {dateRange: recentDateRange()},
+      fetchCount: true,
+      ...(cursor === undefined ? {} : {cursor}),
+    };
+    const query = encodeURIComponent(JSON.stringify(input));
+    const response = await requestJson(
+      `${session.bffOrigin}/expenses.expenseList.getExpenses?input=${query}`,
+      {authorization: session.authorization},
+    );
+    const page = trpcData(response);
+
+    if (!Array.isArray(page?.expenses)) {
+      throw new Error("Pleo returned an invalid recent expenses response");
+    }
+
+    expenses.push(...page.expenses);
+
+    if (page.next === undefined || page.next === null) {
+      break;
+    }
+
+    cursor = page.next;
+  }
+
+  return expenses
+    .slice(0, limit)
+    .map(normalizeRecentExpense);
 }
 
 async function fetchCategories(session) {
@@ -918,6 +1115,9 @@ export async function main(argv = process.argv.slice(2)) {
   const receiptGroups = parsedOptions.command === "expense"
     ? await expandReceiptGroups(parsedOptions.receipts)
     : null;
+  const recentLimit = parsedOptions.command === "recent"
+    ? parseRecentLimit(parsedOptions.limit)
+    : null;
 
   validateBrowser();
   const browser = await puppeteer.connect({
@@ -953,6 +1153,17 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(parsedOptions.json
         ? `${JSON.stringify(entries.map(({name, token}) => ({name, token})), null, 2)}\n`
         : formatCatalog(entries));
+      return;
+    }
+
+    if (parsedOptions.command === "recent") {
+      const expenses = await fetchRecentExpenses(session, recentLimit);
+      process.stdout.write(parsedOptions.json
+        ? `${JSON.stringify({
+          expenses,
+          totals: summarizeRecentExpenses(expenses),
+        }, null, 2)}\n`
+        : formatRecentExpenses(expenses));
       return;
     }
 

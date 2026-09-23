@@ -35,6 +35,8 @@ not merely from the filename appearing in the file input.
 
 - Use `./pleo categories`, `./pleo countries`, and `./pleo projects` to obtain
   filename tokens.
+- Use `./pleo recent [--limit NUMBER] [--json]` to inspect recent expenses,
+  their transaction and review statuses, and whether a receipt is uploaded.
 - Name receipts as
   `YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY[_COMMENT].{pdf,png}`.
 - Use `./pleo expense RECEIPT [SUPPORTING ...]` for a dry run, then

@@ -21,6 +21,21 @@ List the valid filename tokens:
 ./pleo projects
 ```
 
+List the 10 most recent expenses and their review status:
+
+```sh
+./pleo recent
+./pleo recent --limit 25
+./pleo recent --json
+```
+
+The listing includes the expense date, merchant, amount, transaction status,
+review status, and whether a receipt is uploaded or missing. Totals are grouped
+by review status and currency. The receipt total counts expenses with an
+uploaded receipt, not individual attachment files. JSON output includes both
+the expenses and grouped totals. Reimbursement payouts are labelled as such
+and show `Not applicable` instead of a receipt status.
+
 Name receipts using the category and project tokens:
 
 ```text
