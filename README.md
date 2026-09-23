@@ -76,6 +76,21 @@ Preview or submit every receipt group in the directory:
 ./pleo expense receipts/ --submit
 ```
 
+To have Claude Code or Codex analyze, reconcile, and rename an unprepared
+receipt directory first, invoke the repository skill with the directory path:
+
+```text
+# Claude Code
+/prepare-pleo-receipts receipts/
+
+# Codex
+$prepare-pleo-receipts receipts/
+```
+
+The skill always uses the actual charged SEK amount in filenames, groups card
+slips and statements with their primary receipts, and validates the directory
+without submitting expenses.
+
 The directory scan rejects unrecognized receipt names, orphaned supporting
 files, and gaps in the supporting-file sequence before creating any expenses.
 

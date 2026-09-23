@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Pleo Receipts"
+  short_description: "Analyze, group, and rename a Pleo receipt directory"
+  default_prompt: "Analyze and rename the receipts in the supplied directory for Pleo, then validate the result without submitting expenses."
