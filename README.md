@@ -119,8 +119,8 @@ files, and gaps in the supporting-file sequence before creating any expenses.
 
 Use `--merchant`, `--date`, `--amount`, `--currency`, `--category`, or
 `--project` when a receipt needs an override. `--country` accepts a token from
-`./pleo countries`. `--json` gives machine-readable output for listings and
-expense results.
+`./pleo countries` and requires an exact match. `--json` gives
+machine-readable output for listings and expense results.
 
 Submission uses a deterministic idempotency key derived from the primary
 receipt bytes to make retries safe. Expense creation and each receipt upload

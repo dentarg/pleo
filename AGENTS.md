@@ -35,6 +35,7 @@ not merely from the filename appearing in the file input.
 
 - Use `./pleo categories`, `./pleo countries`, and `./pleo projects` to obtain
   filename tokens.
+- Country values must exactly match a token from `./pleo countries`.
 - Use `./pleo recent [--limit NUMBER] [--json]` to inspect recent expenses,
   their transaction and review statuses, whether a receipt is uploaded, and
   the approved reimbursement balance awaiting payout.

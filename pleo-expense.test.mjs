@@ -8,6 +8,7 @@ import {
   buildExpenseData,
   catalogEntries,
   discoverReceiptGroups,
+  formatExpense,
   normalizeMinorMoney,
   normalizeRecentExpense,
   normalizeNote,
@@ -16,6 +17,7 @@ import {
   parseReceipt,
   parseReceiptFilename,
   receiptMimeType,
+  resolveCountryCode,
   selectUnique,
   summarizeRecentExpenses,
 } from "./pleo-expense.mjs";
@@ -276,6 +278,32 @@ test("parses an optional filename comment as the expense note", () => {
       "2026-01-15_Example_Transit_42_EUR_local-transport_alpha_DE_Client_dinner.pdf",
     ).note,
     "Client dinner",
+  );
+});
+
+test("shows the expense note in a dry-run overview", () => {
+  const output = formatExpense({
+    accountingDate: "2026-01-15",
+    amount: 42,
+    category: "Local transport",
+    country: "DE",
+    currency: "EUR",
+    merchant: "Example Transit",
+    note: "Client dinner",
+    primaryReceipt: "receipt.pdf",
+    project: null,
+    receiptDate: "2026-01-15",
+    receiptFiles: 1,
+  }, {dryRun: true});
+
+  assert.match(output, /^Note\s+Client dinner$/m);
+});
+
+test("requires an exact ISO country token", () => {
+  assert.equal(resolveCountryCode("GB"), "GB");
+  assert.throws(
+    () => resolveCountryCode("UK"),
+    /No country token matched "UK"; use \.\/pleo countries/,
   );
 });
 

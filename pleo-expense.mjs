@@ -5,7 +5,7 @@ import {createRequire} from "node:module";
 import {readdir, readFile, stat} from "node:fs/promises";
 import {basename, extname, join} from "node:path";
 import process from "node:process";
-import {pathToFileURL} from "node:url";
+import {fileURLToPath, pathToFileURL} from "node:url";
 
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import puppeteer from "puppeteer-core";
@@ -15,6 +15,9 @@ const isoCountries = require("i18n-iso-countries");
 isoCountries.registerLocale(require("i18n-iso-countries/langs/en.json"));
 
 const PLEO_APP_URL = "https://app.pleo.io/expenses";
+const STANDARD_FONT_DATA_URL = fileURLToPath(
+  new URL("node_modules/pdfjs-dist/standard_fonts/", import.meta.url),
+);
 const RECEIPT_MIME_TYPES = new Map([
   [".pdf", "application/pdf"],
   [".png", "image/png"],
@@ -357,6 +360,7 @@ export async function extractPdfText(buffer) {
   const document = await pdfjs.getDocument({
     data: new Uint8Array(buffer),
     isEvalSupported: false,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
     useWorkerFetch: false,
   }).promise;
   const pages = [];
@@ -690,7 +694,22 @@ function countryEntries() {
     .sort((left, right) => left.token.localeCompare(right.token));
 }
 
-function formatExpense(summary, {dryRun, expenseId}) {
+export function resolveCountryCode(query) {
+  const needle = normalize(query);
+  const entry = countryEntries().find(
+    (candidate) => normalize(candidate.token) === needle,
+  );
+
+  if (!entry) {
+    throw new Error(
+      `No country token matched "${query}"; use ./pleo countries`,
+    );
+  }
+
+  return entry.item;
+}
+
+export function formatExpense(summary, {dryRun, expenseId}) {
   const rows = [
     ["Primary receipt", summary.primaryReceipt],
     ["Merchant", summary.merchant],
@@ -700,6 +719,7 @@ function formatExpense(summary, {dryRun, expenseId}) {
     ["Category", summary.category],
     ["Project", summary.project ?? "None"],
     ["Country", summary.country],
+    ["Note", summary.note || "None"],
     ["Receipt files", String(summary.receiptFiles)],
   ];
   const width = Math.max(...rows.map(([label]) => label.length));
@@ -944,11 +964,7 @@ async function resolveExpenseFields(session, options, receipt) {
     : null;
   const allowedFrom = trpcData(allowedResponse).slice(0, 10);
   const accountingDate = receipt.date < allowedFrom ? allowedFrom : receipt.date;
-  const country = selectCatalogEntry(
-    countryEntries(),
-    options.country,
-    "country",
-  ).item;
+  const country = resolveCountryCode(options.country);
 
   return {
     accountingDate,
@@ -1070,6 +1086,7 @@ async function prepareExpense(session, parsedOptions) {
     country: resolved.country,
     currency: receipt.currency,
     merchant: receipt.merchant,
+    note: normalizeNote(options.note),
     primaryReceipt: basename(options.receipts[0]),
     project: resolved.project?.label ?? null,
     receiptFiles: options.receipts.length,
