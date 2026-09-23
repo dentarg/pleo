@@ -20,7 +20,7 @@ const RECEIPT_MIME_TYPES = new Map([
   [".png", "image/png"],
 ]);
 const RECEIPT_FILENAME_PATTERN =
-  /^((20\d{2}-\d{2}-\d{2})_(.+)_([\d]+(?:[.,]\d+)?)_([A-Z]{3})_([^_]+)_([^_]+)_([A-Z]{2}))(?:_(.+))?\.(?:pdf|png)$/i;
+  /^((20\d{2}-\d{2}-\d{2})_(.+)_([\d]+(?:[.,]\d+)?)_([A-Z]{3})_([^_]+)_([^_]*)_([A-Z]{2}))(?:_(.+))?\.(?:pdf|png)$/i;
 
 export function receiptMimeType(path) {
   return RECEIPT_MIME_TYPES.get(extname(path).toLocaleLowerCase("en")) ?? null;
@@ -81,6 +81,7 @@ Expense options:
 
 Receipt filename:
   YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY[_COMMENT].{pdf,png}
+  Use CATEGORY__COUNTRY when the expense has no project.
 
 Supporting filename:
   YYYY-MM-DD_MERCHANT_AMOUNT_CURRENCY_CATEGORY_PROJECT_COUNTRY_N.{pdf,png}
@@ -245,7 +246,7 @@ export function parseReceiptFilename(filename) {
     date: match[2],
     merchant: match[3].replaceAll("_", " "),
     ...(match[9] ? {note: match[9].replaceAll("_", " ")} : {}),
-    project: match[7],
+    project: match[7] || null,
   };
 }
 
@@ -697,7 +698,7 @@ function formatExpense(summary, {dryRun, expenseId}) {
     ["Receipt date", summary.receiptDate],
     ["Accounting date", summary.accountingDate],
     ["Category", summary.category],
-    ["Project", summary.project],
+    ["Project", summary.project ?? "None"],
     ["Country", summary.country],
     ["Receipt files", String(summary.receiptFiles)],
   ];
@@ -923,7 +924,7 @@ async function resolveExpenseFields(session, options, receipt) {
   const [accounts, projectGroup, allowedResponse] =
     await Promise.all([
       fetchCategories(session),
-      fetchProjectGroup(session),
+      options.project ? fetchProjectGroup(session) : null,
       requestJson(
         `${session.bffOrigin}/expenses.addExpense.getExpenseAllowedFrom?input=%7B%7D`,
         headers,
@@ -934,11 +935,13 @@ async function resolveExpenseFields(session, options, receipt) {
     options.category,
     "category",
   );
-  const projectEntry = selectCatalogEntry(
-    catalogEntries(projectGroup.tags, (tag) => tag.label),
-    options.project,
-    "project",
-  );
+  const projectEntry = projectGroup
+    ? selectCatalogEntry(
+      catalogEntries(projectGroup.tags, (tag) => tag.label),
+      options.project,
+      "project",
+    )
+    : null;
   const allowedFrom = trpcData(allowedResponse).slice(0, 10);
   const accountingDate = receipt.date < allowedFrom ? allowedFrom : receipt.date;
   const country = selectCatalogEntry(
@@ -952,7 +955,7 @@ async function resolveExpenseFields(session, options, receipt) {
     allowedFrom,
     category: categoryEntry.item,
     country,
-    project: projectEntry.item,
+    project: projectEntry?.item ?? null,
     projectGroup,
   };
 }
@@ -1005,7 +1008,7 @@ function validateOptions(options) {
     throw new Error("At least one receipt path is required");
   }
 
-  if (!options.project) {
+  if (options.project === undefined) {
     throw new Error(
       "A project token is required in the filename or with --project",
     );
@@ -1068,7 +1071,7 @@ async function prepareExpense(session, parsedOptions) {
     currency: receipt.currency,
     merchant: receipt.merchant,
     primaryReceipt: basename(options.receipts[0]),
-    project: resolved.project.label,
+    project: resolved.project?.label ?? null,
     receiptFiles: options.receipts.length,
     receiptDate: receipt.date,
   };
@@ -1093,25 +1096,12 @@ async function submitExpense(session, prepared) {
     summary,
   } = prepared;
 
-  const expense = await createExpense(session, {
-    accountId: resolved.category.id,
-    amount: {
-      currency: receipt.currency,
-      value: receipt.amount,
-    },
-    attendees: [],
-    idempotencyKey: deterministicUuid(receiptBuffer),
-    merchantAddress: {
-      country: resolved.country,
-    },
-    merchantName: receipt.merchant,
-    note: normalizeNote(options.note),
-    performed: `${resolved.accountingDate}T12:00:00.000Z`,
-    tagGroups: [{
-      groupId: resolved.projectGroup.id,
-      rowId: resolved.project.value,
-    }],
-  });
+  const expense = await createExpense(session, buildExpenseData({
+    options,
+    receipt,
+    receiptBuffer,
+    resolved,
+  }));
   let uploaded = 0;
 
   for (let index = 0; index < receiptBuffers.length; index += 1) {
@@ -1137,6 +1127,28 @@ async function submitExpense(session, prepared) {
     expenseId: expense.accountingEntryId,
     receiptsUploaded: uploaded,
     summary,
+  };
+}
+
+export function buildExpenseData({options, receipt, receiptBuffer, resolved}) {
+  return {
+    accountId: resolved.category.id,
+    amount: {
+      currency: receipt.currency,
+      value: receipt.amount,
+    },
+    attendees: [],
+    idempotencyKey: deterministicUuid(receiptBuffer),
+    merchantAddress: {
+      country: resolved.country,
+    },
+    merchantName: receipt.merchant,
+    note: normalizeNote(options.note),
+    performed: `${resolved.accountingDate}T12:00:00.000Z`,
+    tagGroups: resolved.project ? [{
+      groupId: resolved.projectGroup.id,
+      rowId: resolved.project.value,
+    }] : [],
   };
 }
 

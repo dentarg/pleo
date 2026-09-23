@@ -69,6 +69,13 @@ The first file is the primary receipt and supplies filename metadata. Country
 is required. The optional comment becomes the expense note; underscores in it
 are converted to spaces. `--note` overrides the filename comment.
 
+For an expense without a project, leave the project segment empty. The two
+adjacent underscores between the category and country are required:
+
+```text
+2026-01-15_Example_Transit_42_EUR_category-token__DE.pdf
+```
+
 Any additional PDF or PNG files are uploaded as supporting documents on the
 same expense. PNG files must provide all receipt metadata through their
 filename or CLI overrides; unlike PDFs, their contents are not scanned for

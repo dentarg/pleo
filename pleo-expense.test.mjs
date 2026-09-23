@@ -5,6 +5,7 @@ import {basename, join} from "node:path";
 import test from "node:test";
 
 import {
+  buildExpenseData,
   catalogEntries,
   discoverReceiptGroups,
   normalizeMinorMoney,
@@ -214,6 +215,44 @@ test("parses expense metadata from a filename", () => {
       project: "alpha",
     },
   );
+});
+
+test("parses an empty project from a filename", () => {
+  assert.deepEqual(
+    parseReceiptFilename(
+      "2026-01-15_Example_Transit_42_EUR_local-transport__DE.pdf",
+    ),
+    {
+      amount: 42,
+      category: "local-transport",
+      country: "DE",
+      currency: "EUR",
+      date: "2026-01-15",
+      merchant: "Example Transit",
+      project: null,
+    },
+  );
+});
+
+test("omits project tags when an expense has no project", () => {
+  const data = buildExpenseData({
+    options: {},
+    receipt: {
+      amount: 42,
+      currency: "EUR",
+      merchant: "Example Transit",
+    },
+    receiptBuffer: Buffer.from("receipt"),
+    resolved: {
+      accountingDate: "2026-01-15",
+      category: {id: "category-1"},
+      country: "DE",
+      project: null,
+      projectGroup: null,
+    },
+  });
+
+  assert.deepEqual(data.tagGroups, []);
 });
 
 test("requires a country token in a receipt filename", () => {
